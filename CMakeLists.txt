@@ -36,7 +36,12 @@ target_link_libraries(MediaForge PRIVATE
 # Windows 平台特定配置
 if(WIN32)
     # 链接系统库
-    # target_link_libraries(MediaForge PRIVATE dwmapi)
+    target_link_libraries(MediaForge PRIVATE 
+        dwmapi
+        Comdlg32
+        Shell32
+        Ole32
+    )
 endif()
 
 # 复制 FFmpeg DLL 到输出目录
@@ -51,3 +56,26 @@ if(WIN32 AND DEFINED FFMPEG_BIN_DIR)
         )
     endforeach()
 endif()
+
+# --- Installation & Packaging ---
+
+# Install Executable
+install(TARGETS MediaForge RUNTIME DESTINATION bin)
+
+# Install FFmpeg DLLs
+if(WIN32 AND DEFINED FFMPEG_BIN_DIR)
+    file(GLOB FFMPEG_DLLS "${FFMPEG_BIN_DIR}/*.dll")
+    install(FILES ${FFMPEG_DLLS} DESTINATION bin)
+endif()
+
+# CPack Configuration
+set(CPACK_PACKAGE_NAME "MediaForge")
+set(CPACK_PACKAGE_VENDOR "MediaForge Team")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "MediaForge Video Transcoder")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "MediaForge")
+
+# Use ZIP generator by default
+set(CPACK_GENERATOR "ZIP")
+
+include(CPack)

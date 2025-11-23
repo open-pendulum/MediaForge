@@ -15,9 +15,13 @@ public:
     Transcoder();
     ~Transcoder();
 
-    bool run(const std::string& inputPath, const std::string& outputPath);
+    bool run(const std::string& inputPath, const std::string& outputPath, const std::string& encoderName = "auto");
+    static bool isHevc(const std::string& inputPath);
+    
+    void setPauseCallback(std::function<bool()> cb);
 
 private:
+    std::function<bool()> pauseCallback;
     AVFormatContext* inputFormatContext = nullptr;
     AVFormatContext* outputFormatContext = nullptr;
     
@@ -35,7 +39,7 @@ private:
 
     bool openInput(const std::string& inputPath);
     bool openOutput(const std::string& outputPath);
-    bool initVideoTranscoding();
+    bool initVideoTranscoding(const std::string& encoderName);
     bool initAudioTranscoding();  // Initialize audio transcoding
     void cleanup();
     

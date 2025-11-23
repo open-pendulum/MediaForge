@@ -1,5 +1,7 @@
 #include "transcoder.h"
 #include <iostream>
+#include <thread>
+#include <chrono>
 
 extern "C" {
 #include <libavutil/opt.h>
@@ -9,6 +11,10 @@ Transcoder::Transcoder() {}
 
 Transcoder::~Transcoder() {
     cleanup();
+}
+
+void Transcoder::setPauseCallback(std::function<bool()> cb) {
+    pauseCallback = cb;
 }
 
 void Transcoder::cleanup() {
@@ -106,7 +112,7 @@ bool Transcoder::tryOpenEncoder(const char* encoderName, AVDictionary** opts) {
     return true;
 }
 
-bool Transcoder::initVideoTranscoding() {
+bool Transcoder::initVideoTranscoding(const std::string& encoderName) {
     // Find video stream
     for (unsigned int i = 0; i < inputFormatContext->nb_streams; i++) {
         if (inputFormatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -125,14 +131,13 @@ bool Transcoder::initVideoTranscoding() {
     AVCodecID codecId = videoStreamCtx.inStream->codecpar->codec_id;
     bool decoderOpened = false;
     
+    // Simple decoder selection logic - could be improved to match encoder selection
     if (codecId == AV_CODEC_ID_H264) {
-        // H.264 hardware decoders
-        if (tryOpenDecoder("h264_cuvid")) decoderOpened = true;      // NVIDIA
-        else if (tryOpenDecoder("h264_qsv")) decoderOpened = true;   // Intel
+        if (tryOpenDecoder("h264_cuvid")) decoderOpened = true;
+        else if (tryOpenDecoder("h264_qsv")) decoderOpened = true;
     } else if (codecId == AV_CODEC_ID_HEVC) {
-        // H.265 hardware decoders
-        if (tryOpenDecoder("hevc_cuvid")) decoderOpened = true;      // NVIDIA
-        else if (tryOpenDecoder("hevc_qsv")) decoderOpened = true;   // Intel
+        if (tryOpenDecoder("hevc_cuvid")) decoderOpened = true;
+        else if (tryOpenDecoder("hevc_qsv")) decoderOpened = true;
     }
     
     // Fallback to software decoder
@@ -155,17 +160,29 @@ bool Transcoder::initVideoTranscoding() {
     // Create output stream
     videoStreamCtx.outStream = avformat_new_stream(outputFormatContext, nullptr);
 
-    // Try hardware encoders (by priority)
+    // Try hardware encoders
     bool encoderOpened = false;
     
-    // NVIDIA NVENC
-    if (tryOpenEncoder("hevc_nvenc")) encoderOpened = true;
-    // Intel Quick Sync
-    else if (tryOpenEncoder("hevc_qsv")) encoderOpened = true;
-    // AMD AMF
-    else if (tryOpenEncoder("hevc_amf")) encoderOpened = true;
-    // Software encoder
-    else if (tryOpenEncoder("libx265")) encoderOpened = true;
+    if (encoderName != "auto") {
+        // Try specific encoder
+        if (tryOpenEncoder(encoderName.c_str())) {
+            encoderOpened = true;
+        } else {
+            std::cerr << "Failed to open requested encoder: " << encoderName << ". Falling back to auto." << std::endl;
+        }
+    }
+    
+    if (!encoderOpened) {
+        // Auto selection
+        // NVIDIA NVENC
+        if (tryOpenEncoder("hevc_nvenc")) encoderOpened = true;
+        // Intel Quick Sync
+        else if (tryOpenEncoder("hevc_qsv")) encoderOpened = true;
+        // AMD AMF
+        else if (tryOpenEncoder("hevc_amf")) encoderOpened = true;
+        // Software encoder
+        else if (tryOpenEncoder("libx265")) encoderOpened = true;
+    }
     
     if (!encoderOpened) {
         std::cerr << "Failed to find any available H.265 encoder" << std::endl;
@@ -272,10 +289,10 @@ int Transcoder::encode(AVCodecContext *avctx, AVStream *stream, AVFrame *frame, 
     return ret;
 }
 
-bool Transcoder::run(const std::string& inputPath, const std::string& outputPath) {
+bool Transcoder::run(const std::string& inputPath, const std::string& outputPath, const std::string& encoderName) {
     if (!openInput(inputPath)) return false;
     if (!openOutput(outputPath)) return false;
-    if (!initVideoTranscoding()) return false;
+    if (!initVideoTranscoding(encoderName)) return false;
     if (!initAudioTranscoding()) return false;
 
     // Open output file
@@ -301,6 +318,13 @@ bool Transcoder::run(const std::string& inputPath, const std::string& outputPath
     int64_t totalDuration = inputFormatContext->duration;
     
     while (av_read_frame(inputFormatContext, packet) >= 0) {
+        // Check for pause
+        if (pauseCallback) {
+            while (pauseCallback()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+
         // Calculate and report progress
         if (onProgress && totalDuration > 0) {
             int64_t currentPts = packet->pts;
@@ -373,5 +397,31 @@ bool Transcoder::run(const std::string& inputPath, const std::string& outputPath
 end:
     av_packet_free(&packet);
     av_frame_free(&frame);
+    av_frame_free(&frame);
     return true;
+}
+
+bool Transcoder::isHevc(const std::string& inputPath) {
+    AVFormatContext* fmtCtx = nullptr;
+    if (avformat_open_input(&fmtCtx, inputPath.c_str(), nullptr, nullptr) < 0) {
+        return false;
+    }
+
+    if (avformat_find_stream_info(fmtCtx, nullptr) < 0) {
+        avformat_close_input(&fmtCtx);
+        return false;
+    }
+
+    bool isHevc = false;
+    for (unsigned int i = 0; i < fmtCtx->nb_streams; i++) {
+        if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            if (fmtCtx->streams[i]->codecpar->codec_id == AV_CODEC_ID_HEVC) {
+                isHevc = true;
+            }
+            break;
+        }
+    }
+
+    avformat_close_input(&fmtCtx);
+    return isHevc;
 }

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <string>
 #include <memory>
@@ -8,6 +8,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
+#include <libswscale/swscale.h>
 }
 
 class Transcoder {
@@ -15,7 +16,7 @@ public:
     Transcoder();
     ~Transcoder();
 
-    bool run(const std::string& inputPath, const std::string& outputPath, const std::string& encoderName = "auto");
+    bool run(const std::string& inputPath, const std::string& outputPath, const std::string& encoderName = "auto", bool allowHardwareDecoders = true);
     static bool isHevc(const std::string& inputPath);
     
     void setPauseCallback(std::function<bool()> cb);
@@ -32,6 +33,10 @@ private:
         AVStream* outStream = nullptr;
         int streamIndex = -1;
         int64_t nextPts = 0;  // 用于生成正确的帧时间戳
+        SwsContext* swsCtx = nullptr;
+        AVFrame* encFrame = nullptr;
+        int64_t lastDts = AV_NOPTS_VALUE;
+        int64_t lastPts = AV_NOPTS_VALUE;
     };
 
     StreamContext videoStreamCtx;
@@ -39,7 +44,7 @@ private:
 
     bool openInput(const std::string& inputPath);
     bool openOutput(const std::string& outputPath);
-    bool initVideoTranscoding(const std::string& encoderName);
+    bool initVideoTranscoding(const std::string& encoderName, bool allowHardwareDecoders);
     bool initAudioTranscoding();  // Initialize audio transcoding
     void cleanup();
     

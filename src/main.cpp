@@ -1,5 +1,7 @@
 #include "job_system.h"
+#include "transcoder.h"
 #include <iostream>
+#include <fstream>
 #include <stdio.h>
 #include <iomanip>
 #include <string>
@@ -35,6 +37,20 @@ std::string WideToUtf8(const std::wstring& wstr) {
     std::string strTo(size_needed, 0);
     WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
     return strTo;
+}
+
+// Helper to convert UTF-8 to Wide String
+std::wstring Utf8ToWide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+    std::wstring wstrTo(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+    return wstrTo;
+}
+
+// Helper to create fs::path from UTF-8 string correctly on Windows
+fs::path Utf8ToPath(const std::string& str) {
+    return fs::path(Utf8ToWide(str));
 }
 
 // Helper for File Dialog (Unicode)
@@ -97,6 +113,55 @@ std::string OpenFolderDialog(GLFWwindow* window) {
     return "";
 }
 
+void loadConfig(std::string& outputFolder) {
+    std::ifstream configFile("config.ini");
+    if (configFile.is_open()) {
+        std::getline(configFile, outputFolder);
+        configFile.close();
+    }
+}
+
+void saveConfig(const std::string& outputFolder) {
+    std::ofstream configFile("config.ini");
+    if (configFile.is_open()) {
+        configFile << outputFolder;
+        configFile.close();
+    }
+}
+
+// Generate unique filename by adding numeric suffix if file exists
+std::string generateUniqueFilename(const fs::path& basePath) {
+    if (!fs::exists(basePath)) {
+        return basePath.string(); // Note: .string() returns UTF-8 if path was constructed from wstring? No, on Windows it returns ANSI usually.
+        // Actually, we should return the UTF-8 string we started with if possible, or convert back.
+        // But here basePath is constructed from Utf8ToPath, so it holds wstring internally on Windows.
+        // .string() on Windows converts wstring to ANSI (system code page), which might lose characters!
+        // We should use .u8string() (C++20) or convert manually.
+        // Since we are C++17 likely, let's use WideToUtf8(basePath.wstring())
+        return WideToUtf8(basePath.wstring());
+    }
+    
+    fs::path dir = basePath.parent_path();
+    // stem() and extension() return path objects, so we need to convert them to wstring then to UTF-8
+    std::string stem = WideToUtf8(basePath.stem().wstring());
+    std::string ext = WideToUtf8(basePath.extension().wstring());
+    
+    int counter = 1;
+    while (true) {
+        // Reconstruct path using UTF-8 components converted to path
+        fs::path newPath = dir / Utf8ToPath(stem + "_" + std::to_string(counter) + ext);
+        if (!fs::exists(newPath)) {
+            return WideToUtf8(newPath.wstring());
+        }
+        counter++;
+        if (counter > 1000) {
+            // Safety check to prevent infinite loop
+            std::cerr << "Too many duplicate files, giving up" << std::endl;
+            return WideToUtf8(basePath.wstring());
+        }
+    }
+}
+
 int main() {
     // Setup GLFW
     glfwSetErrorCallback(glfw_error_callback);
@@ -136,6 +201,7 @@ int main() {
     // Job Manager
     JobManager jobManager(3); // Limit to 3 concurrent jobs
     std::string outputFolder = "../data";
+    loadConfig(outputFolder);
     
     // Encoder Selection
     const char* encoders[] = { "Auto", "NVIDIA (hevc_nvenc)", "Intel (hevc_qsv)", "AMD (hevc_amf)", "CPU (libx265)" };
@@ -160,6 +226,7 @@ int main() {
                 std::string folder = OpenFolderDialog(window);
                 if (!folder.empty()) {
                     outputFolder = folder;
+                    saveConfig(outputFolder);
                 }
             }
             
@@ -174,15 +241,20 @@ int main() {
             if (ImGui::Button("Add Files")) {
                 std::vector<std::string> files = OpenFileDialog(window);
                 for (const auto& file : files) {
-                    fs::path p(file);
-                    std::string filename = p.filename().string();
-                    std::string stem = p.stem().string();
-                    std::string extension = p.extension().string();
+                    if (Transcoder::isHevc(file)) {
+                        std::cout << "Skipping " << file << " as it is already HEVC." << std::endl;
+                        continue;
+                    }
+                    fs::path p = Utf8ToPath(file);
+                    std::string filename = WideToUtf8(p.filename().wstring());
+                    std::string stem = WideToUtf8(p.stem().wstring());
+                    std::string extension = WideToUtf8(p.extension().wstring());
                     
                     // Construct output path: outputFolder / filename_h265.extension
-                    fs::path outPath = fs::path(outputFolder) / (stem + "_h265" + extension);
+                    fs::path outPath = Utf8ToPath(outputFolder) / Utf8ToPath(stem + "_h265" + extension);
+                    std::string uniqueOutPath = generateUniqueFilename(outPath);
                     
-                    jobManager.addJob(file, outPath.string(), encoderIds[currentEncoder]);
+                    jobManager.addJob(file, uniqueOutPath, encoderIds[currentEncoder]);
                 }
             }
             
@@ -210,13 +282,23 @@ int main() {
             for (const auto& job : jobs) {
                 ImGui::PushID(job->id);
                 
-                fs::path p(job->inputPath);
-                ImGui::Text("%s", p.filename().string().c_str());
+                fs::path p = Utf8ToPath(job->inputPath);
+                ImGui::Text("%s", WideToUtf8(p.filename().wstring()).c_str());
                 
                 float progress = job->progress;
                 char buf[32];
                 sprintf(buf, "%.0f%%", progress * 100.0f);
+                
+                if (job->status == JobStatus::Failed) {
+                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
+                }
+                
                 ImGui::ProgressBar(progress, ImVec2(0.0f, 0.0f), buf);
+                
+                if (job->status == JobStatus::Failed) {
+                    ImGui::PopStyleColor();
+                }
+
                 ImGui::SameLine();
                 ImGui::Text("%s", job->statusMessage.c_str());
                 

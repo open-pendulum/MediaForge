@@ -1,5 +1,22 @@
 #include "job_system.h"
 #include <iostream>
+#include <filesystem>
+#include <windows.h> // For MultiByteToWideChar
+
+namespace fs = std::filesystem;
+
+// Helper to convert UTF-8 to Wide String (Duplicated from main.cpp, ideally should be in a common header)
+static std::wstring Utf8ToWide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+    std::wstring wstrTo(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+    return wstrTo;
+}
+
+static fs::path Utf8ToPath(const std::string& str) {
+    return fs::path(Utf8ToWide(str));
+}
 
 JobManager::JobManager(int maxConcurrent) : maxConcurrentJobs(maxConcurrent) {
     start();
@@ -100,12 +117,48 @@ void JobManager::processJob(std::shared_ptr<TranscodeJob> job) {
         return paused.load();
     });
     
-    if (transcoder.run(job->inputPath, job->outputPath, job->encoder)) {
+    if (transcoder.run(job->inputPath, job->outputPath, job->encoder, true)) {
         job->status = JobStatus::Completed;
         job->statusMessage = "Completed";
         job->progress = 1.0f;
     } else {
-        job->status = JobStatus::Failed;
-        job->statusMessage = "Failed";
+        // Hardware decoding failed, retry with software decoder
+        std::cout << "Hardware decoding failed for " << job->inputPath << ", retrying with software decoder..." << std::endl;
+        job->statusMessage = "Retrying (Software)...";
+        job->progress = 0.0f;
+        
+        bool success = false;
+        {
+            Transcoder softwareTranscoder;
+            softwareTranscoder.setProgressCallback([job](float progress) {
+                job->progress = progress;
+            });
+            
+            softwareTranscoder.setPauseCallback([this]() {
+                return paused.load();
+            });
+            
+            success = softwareTranscoder.run(job->inputPath, job->outputPath, job->encoder, false);
+        } // softwareTranscoder destroyed here, file handle closed
+
+        if (success) {
+            job->status = JobStatus::Completed;
+            job->statusMessage = "Completed (Software)";
+            job->progress = 1.0f;
+        } else {
+            job->status = JobStatus::Failed;
+            job->statusMessage = "Failed";
+            // Cleanup output file
+            try {
+                fs::path outPath = Utf8ToPath(job->outputPath);
+                if (fs::exists(outPath)) {
+                    fs::remove(outPath);
+                    std::cout << "Cleaned up failed output file: " << job->outputPath << std::endl;
+                }
+            } catch (const fs::filesystem_error& e) {
+                std::cerr << "Warning: Could not delete failed output file: " << e.what() << std::endl;
+                // Don't fail the job just because we couldn't delete the output file
+            }
+        }
     }
 }

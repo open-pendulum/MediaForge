@@ -41,6 +41,7 @@ if(WIN32)
         Comdlg32
         Shell32
         Ole32
+        legacy_stdio_definitions.lib
     )
 endif()
 

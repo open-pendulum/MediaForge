@@ -14,8 +14,36 @@ static std::wstring Utf8ToWide(const std::string& str) {
     return wstrTo;
 }
 
+static std::string WideToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
+
 static fs::path Utf8ToPath(const std::string& str) {
     return fs::path(Utf8ToWide(str));
+}
+
+static std::string findAvailablePath(const std::string& basePath) {
+    fs::path p = Utf8ToPath(basePath);
+    if (!fs::exists(p)) {
+        return basePath;
+    }
+
+    fs::path dir = p.parent_path();
+    std::string stem = WideToUtf8(p.stem().wstring());
+    std::string ext = WideToUtf8(p.extension().wstring());
+
+    for (int counter = 1; counter <= 999; counter++) {
+        fs::path newPath = dir / Utf8ToPath(stem + "_" + std::to_string(counter) + ext);
+        if (!fs::exists(newPath)) {
+            return WideToUtf8(newPath.wstring());
+        }
+    }
+
+    return basePath;
 }
 
 JobManager::JobManager(int maxConcurrent) : maxConcurrentJobs(maxConcurrent) {
@@ -97,7 +125,6 @@ void JobManager::workerLoop() {
 }
 
 void JobManager::processJob(std::shared_ptr<TranscodeJob> job) {
-    // Check if already HEVC
     if (Transcoder::isHevc(job->inputPath)) {
         job->status = JobStatus::Skipped;
         job->statusMessage = "Skipped (Already H.265)";
@@ -105,41 +132,47 @@ void JobManager::processJob(std::shared_ptr<TranscodeJob> job) {
         return;
     }
 
+    job->outputPath = findAvailablePath(job->outputPath);
+
     job->status = JobStatus::Running;
     job->statusMessage = "Transcoding...";
-    
-    Transcoder transcoder;
-    transcoder.setProgressCallback([job](float progress) {
-        job->progress = progress;
-    });
-    
-    transcoder.setPauseCallback([this]() {
-        return paused.load();
-    });
-    
-    if (transcoder.run(job->inputPath, job->outputPath, job->encoder, true)) {
+
+    bool success = false;
+
+    {
+        Transcoder transcoder;
+        transcoder.setProgressCallback([job](float progress) {
+            job->progress = progress;
+        });
+
+        transcoder.setPauseCallback([this]() {
+            return paused.load();
+        });
+
+        success = transcoder.run(job->inputPath, job->outputPath, job->encoder, true);
+    }
+
+    if (success) {
         job->status = JobStatus::Completed;
         job->statusMessage = "Completed";
         job->progress = 1.0f;
     } else {
-        // Hardware decoding failed, retry with software decoder
         std::cout << "Hardware decoding failed for " << job->inputPath << ", retrying with software decoder..." << std::endl;
         job->statusMessage = "Retrying (Software)...";
         job->progress = 0.0f;
-        
-        bool success = false;
+
         {
             Transcoder softwareTranscoder;
             softwareTranscoder.setProgressCallback([job](float progress) {
                 job->progress = progress;
             });
-            
+
             softwareTranscoder.setPauseCallback([this]() {
                 return paused.load();
             });
-            
+
             success = softwareTranscoder.run(job->inputPath, job->outputPath, job->encoder, false);
-        } // softwareTranscoder destroyed here, file handle closed
+        }
 
         if (success) {
             job->status = JobStatus::Completed;
@@ -148,7 +181,6 @@ void JobManager::processJob(std::shared_ptr<TranscodeJob> job) {
         } else {
             job->status = JobStatus::Failed;
             job->statusMessage = "Failed";
-            // Cleanup output file
             try {
                 fs::path outPath = Utf8ToPath(job->outputPath);
                 if (fs::exists(outPath)) {
@@ -157,7 +189,6 @@ void JobManager::processJob(std::shared_ptr<TranscodeJob> job) {
                 }
             } catch (const fs::filesystem_error& e) {
                 std::cerr << "Warning: Could not delete failed output file: " << e.what() << std::endl;
-                // Don't fail the job just because we couldn't delete the output file
             }
         }
     }

@@ -22,15 +22,30 @@ add_subdirectory(third_party)
 
 # 源文件
 file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.h")
+list(FILTER SOURCES EXCLUDE REGEX "src/main_cli\\.cpp$")
+
+# MediaForgeCLI 源文件
+set(TRANSCODE_SOURCES
+    src/transcoder.cpp
+    src/demuxer.cpp
+    src/video_decoder.cpp
+    src/video_encoder.cpp
+    src/muxer.cpp
+)
 
 # 可执行文件
 add_executable(MediaForge ${SOURCES})
+add_executable(MediaForgeCLI src/main_cli.cpp ${TRANSCODE_SOURCES})
 
 # 链接库
 # ImGui 已经配置了 PUBLIC 依赖 (GLFW, OpenGL)，所以这里只需要链接 imgui
-target_link_libraries(MediaForge PRIVATE 
+target_link_libraries(MediaForge PRIVATE
     ffmpeg
     imgui
+)
+
+target_link_libraries(MediaForgeCLI PRIVATE
+    ffmpeg
 )
 
 # Windows 平台特定配置
@@ -50,6 +65,12 @@ if(WIN32 AND DEFINED FFMPEG_BIN_DIR)
     file(GLOB FFMPEG_DLLS "${FFMPEG_BIN_DIR}/*.dll")
     foreach(DLL ${FFMPEG_DLLS})
         add_custom_command(TARGET MediaForge POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${DLL}"
+            "${OUTPUT_DIR}"
+            COMMENT "Copying ${DLL} to ${OUTPUT_DIR}"
+        )
+        add_custom_command(TARGET MediaForgeCLI POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DLL}"
             "${OUTPUT_DIR}"

@@ -255,11 +255,17 @@ void ShowTranscodeUI(JobManager& jobManager, std::string& outputFolder, int& cur
             std::string filename = WideToUtf8(p.filename().wstring());
             std::string stem = WideToUtf8(p.stem().wstring());
             std::string extension = WideToUtf8(p.extension().wstring());
-            
-            // Construct output path: outputFolder / filename_h265.extension
-            fs::path outPath = Utf8ToPath(outputFolder) / Utf8ToPath(stem + "_h265" + extension);
+
+            fs::path outDir;
+            if (outputFolder.empty()) {
+                outDir = p.parent_path();
+            } else {
+                outDir = Utf8ToPath(outputFolder);
+            }
+
+            fs::path outPath = outDir / Utf8ToPath(stem + "_h265" + extension);
             std::string uniqueOutPath = generateUniqueFilename(outPath);
-            
+
             jobManager.addJob(file, uniqueOutPath, encoderIds[currentEncoder]);
         }
     }
@@ -653,7 +659,7 @@ int main() {
 
     // Job Manager
     JobManager jobManager(3); // Limit to 3 concurrent jobs
-    std::string outputFolder = "../data";
+    std::string outputFolder = "";
     loadConfig(outputFolder);
     
     // Encoder Selection

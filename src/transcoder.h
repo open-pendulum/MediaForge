@@ -1,15 +1,13 @@
-﻿#pragma once
+#pragma once
 
 #include <string>
 #include <memory>
 #include <functional>
 
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/avutil.h>
-#include <libswscale/swscale.h>
-}
+#include "demuxer.h"
+#include "video_decoder.h"
+#include "video_encoder.h"
+#include "muxer.h"
 
 class Transcoder {
 public:
@@ -18,46 +16,26 @@ public:
 
     bool run(const std::string& inputPath, const std::string& outputPath, const std::string& encoderName = "auto", bool allowHardwareDecoders = true);
     static bool isHevc(const std::string& inputPath);
-    
+
     void setPauseCallback(std::function<bool()> cb);
+    void setProgressCallback(std::function<void(float)> callback);
 
 private:
     std::function<bool()> pauseCallback;
-    AVFormatContext* inputFormatContext = nullptr;
-    AVFormatContext* outputFormatContext = nullptr;
-    
-    struct StreamContext {
-        AVCodecContext* decCtx = nullptr;
-        AVCodecContext* encCtx = nullptr;
-        AVStream* inStream = nullptr;
-        AVStream* outStream = nullptr;
-        int streamIndex = -1;
-        int64_t nextPts = 0;  // 用于生成正确的帧时间戳
-        SwsContext* swsCtx = nullptr;
-        AVFrame* encFrame = nullptr;
-        int64_t lastDts = AV_NOPTS_VALUE;
-        int64_t lastPts = AV_NOPTS_VALUE;
-    };
+    std::function<void(float)> onProgress;
 
-    StreamContext videoStreamCtx;
-    StreamContext audioStreamCtx;  // Audio stream context
+    Demuxer demuxer_;
+    VideoDecoder videoDecoder_;
+    VideoEncoder videoEncoder_;
+    Muxer muxer_;
 
-    bool openInput(const std::string& inputPath);
-    bool openOutput(const std::string& outputPath);
-    bool initVideoTranscoding(const std::string& encoderName, bool allowHardwareDecoders);
-    bool initAudioTranscoding();  // Initialize audio transcoding
-    void cleanup();
-    
-    // Hardware acceleration helper functions
-    bool tryOpenEncoder(const char* encoderName, AVDictionary** opts = nullptr);
-    bool tryOpenDecoder(const char* decoderName);
-    
-    int encode(AVCodecContext *avctx, AVStream *stream, AVFrame *frame, AVFormatContext *fmt_ctx);
+    int videoStreamIndex_ = -1;
+    int audioStreamIndex_ = -1;
 
-public:
-    using ProgressCallback = std::function<void(float)>;
-    void setProgressCallback(ProgressCallback callback) { onProgress = callback; }
+    int videoOutStreamIndex_ = -1;
+    int audioOutStreamIndex_ = -1;
 
-private:
-    ProgressCallback onProgress;
+    bool initVideo(const std::string& encoderName, bool allowHardwareDecoders);
+    bool initAudio();
+    bool process();
 };

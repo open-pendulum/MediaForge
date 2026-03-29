@@ -2,4 +2,5 @@
 build/
 cmake-build*
 data/
-output/ 
+output/
+test_data
